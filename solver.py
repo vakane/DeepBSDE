@@ -199,13 +199,21 @@ class GRUModel(tf.keras.Model):
                                        return_sequences=True, 
                                        return_state=True)
         
-        self.output_layer = tf.keras.layers.Dense(config.eqn_config.dim, activation=None)
+        self.dense_layers = [tf.keras.layers.Dense(units,
+                                                    use_bias=False,
+                                                    activation='relu')
+                              for units in config.net_config.num_hiddens[1:]]
+        
+        self.dense_layers.append(tf.keras.layers.Dense(config.eqn_config.dim, 
+                                                       activation=None)
+                                )
                 
     def _call_net(self, inputs, training):
         transposed_inputs = tf.transpose(inputs, [0, 2, 1])
-        whole_sequence_output, final_state = self.gru(transposed_inputs, training=training)
-        result = self.output_layer(whole_sequence_output)
-        return result
+        x, final_state = self.gru(transposed_inputs, training=training)
+        for layer in self.dense_layers:
+            x = layer(x)
+        return x
 
     def call(self, inputs, training):
         dw, x = inputs
