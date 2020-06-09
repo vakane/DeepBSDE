@@ -94,6 +94,62 @@ class NonsharedModel(tf.keras.Model):
             tf.reduce_sum(z * dw[:, :, -1], 1, keepdims=True)
 
         return y
+    
+
+class SharedModel(tf.keras.Model):
+    """Multiple neural nets f_t(x) sharing first hidden layer"""
+    def __init__(self, config, bsde):
+        super().__init__()
+        self.eqn_config = config.eqn_config
+        self.net_config = config.net_config
+        self.bsde = bsde
+        self.y_init = tf.Variable(np.random.uniform(low=self.net_config.y_init_range[0],
+                                                    high=self.net_config.y_init_range[1],
+                                                    size=[1])
+                                  )
+        self.z_init = tf.Variable(np.random.uniform(low=-.1, high=.1,
+                                                    size=[1, self.eqn_config.dim])
+                                  )
+
+        self.shared_bn_layer = tf.keras.layers.BatchNormalization(
+                momentum=0.99,
+                epsilon=1e-6,
+                beta_initializer=tf.random_normal_initializer(0.0, stddev=0.1),
+                gamma_initializer=tf.random_uniform_initializer(0.1, 0.5)
+        )
+            
+        self.shared_dense_layer = tf.keras.layers.Dense(config.net_config.num_hiddens[0],
+                                                        use_bias=False,
+                                                        activation=None)
+        
+        config.net_config.num_hiddens = config.net_config.num_hiddens[1:]
+        
+        self.subnet = [FeedForwardSubNet(config) for _ in range(self.bsde.num_time_interval-1)]
+
+    def call(self, inputs, training):
+        dw, x = inputs
+        time_stamp = np.arange(0, self.eqn_config.num_time_interval) * self.bsde.delta_t
+        all_one_vec = tf.ones(shape=tf.stack([tf.shape(dw)[0], 1]), dtype=self.net_config.dtype)
+        y = all_one_vec * self.y_init
+        z = tf.matmul(all_one_vec, self.z_init)
+
+        for t in range(0, self.bsde.num_time_interval-1):
+            y = y - self.bsde.delta_t * (
+                self.bsde.f_tf(time_stamp[t], x[:, :, t], y, z)
+            ) + tf.reduce_sum(z * dw[:, :, t], 1, keepdims=True)
+            
+            #shared layer
+            _x = self.shared_bn_layer(x[:, :, t + 1], training)
+            _x = self.shared_dense_layer(_x)
+            _x = tf.nn.relu(_x)
+            
+            #ts-specific layers
+            z = self.subnet[t](_x, training) / self.bsde.dim
+        # terminal time
+        y = y - self.bsde.delta_t * self.bsde.f_tf(time_stamp[-1], x[:, :, -2], y, z) + \
+            tf.reduce_sum(z * dw[:, :, -1], 1, keepdims=True)
+
+        return y
 
 
 class FeedForwardSubNet(tf.keras.Model):
